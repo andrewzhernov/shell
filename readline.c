@@ -1,19 +1,5 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <limits.h>
+#include "readline.h"
 
-/* Размер страницы памяти */
-#define MEMORY_PAGE_SIZE sysconf(_SC_PAGESIZE)
-
-#define CHECK_RES(state, msg) do { \
-    if (state) { \
-        fprintf(stderr, msg); \
-        exit(0); \
-    } \
-} while (0); \
-
-/* Безопасное считывание строки */
 void readline(char **line, FILE *pFile) {
     size_t size = 0;
     size_t capacity = MEMORY_PAGE_SIZE;

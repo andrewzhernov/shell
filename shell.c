@@ -7,25 +7,43 @@
 #include <fcntl.h>
 #include <string.h>
 
+#include "readline.h"
+
+#define NONE 0
+#define SINGLE_QUOTE 1
+#define DOUBLE_QUOTE 2
+#define BACKSLASH 3
+#define STREAM 4
+#define INPUT 5
+#define OUTPUT 6
+
 #define TRUE 1
 #define FALSE 0
-#define ARGS_COUNT 8
+
+#define ARGS_COUNT 4
+#define ARG_SIZE 4
 
 #define CHECK_PTR(ptr) { \
     if (ptr == NULL) { \
-        fprintf(stderr, "shell: failed to allocate memory"); \
-        exit(1); \
+        fprintf(stderr, "shell: failed to allocate memory\n"); \
+        return; \
     } \
 } \
 
 char *pwd;
 
-char inline_command(char** argv) {
+char inline_command(char** argv, char* output, char append) {
     if (!strcmp(argv[0], "exit")) {
         exit(0);
     }
     if (!strcmp(argv[0], "pwd")) {
-        printf("%s\n", pwd);
+        if (output != NULL) {
+            FILE* pFile = fopen(output, (append ? "a": "w"));
+            fprintf(pFile, "%s\n", pwd);
+            fclose(pFile);
+        } else {
+            printf("%s\n", pwd);
+        }
         return TRUE;
     }
     if (!strcmp(argv[0], "cd")) {
@@ -50,7 +68,9 @@ char inline_command(char** argv) {
 
 void external_command(char **argv, char *input, char *output, char append) {
     pid_t child = fork();
-    if (0 == child) {
+    if (-1 == child) {
+        fprintf(stderr, "%s: failed to create process\n", *argv);
+    } else if (0 == child) {
         if (input != NULL) {
             int fd = open(input, O_RDONLY, 0644);
             if (-1 == fd) {
@@ -77,135 +97,182 @@ void external_command(char **argv, char *input, char *output, char append) {
             fprintf(stderr, "%s: command not found\n", *argv);
             _exit(0);
         }
-    } else if (-1 == child) {
-        fprintf(stderr, "%s: failed to create process\n", *argv);
     } else {
         waitpid(child, NULL, 0);
     }
 }
 
 void find_executable(char** argv, char *input, char *output, char append) {
-    if (!inline_command(argv)) {
+    if (!inline_command(argv, output, append)) {
         external_command(argv, input, output, append);
     }
 }
 
-void streams_handler(char** argv) {
-    int size = ARGS_COUNT, i = 0, last = 0;
-    char append;
-    char *input = NULL, *output = NULL;
-    char **new_argv = (char**)malloc(size * sizeof(char*));
-
-    for (i = 0; argv[i] != NULL; ++i) {
-        if (argv[i][0] == '<') {
-            if (argv[i][1] != '\0') {
-                input = &argv[i][1];
-            } else if (argv[++i] != NULL) {
-                input = argv[i];
-            } else {
-                fprintf(stderr, "operator <: syntax error\n");
-                exit(1);
-            }
-        } else if (argv[i][0] == '>') {
-            if (argv[i][1] == '>') {
-                if (argv[i][2] != '\0') {
-                    output = &argv[i][2];
-                } else if (argv[++i] != NULL) {
-                    output = argv[i];
-                } else {
-                    fprintf(stderr, "operator >>: syntax error\n");
-                    exit(1);
-                }
-                append = TRUE;
-            } else {
-                if (argv[i][1] != '\0') {
-                    output = &argv[i][1];
-                } else if (argv[++i] != NULL) {
-                    output = argv[i];
-                } else {
-                    fprintf(stderr, "operator >: syntax error\n");
-                    exit(1);
-                }
-                append = FALSE;
-            }
-        } else {
-            if (last + 1 >= size) {
-                size += ARGS_COUNT;
-                new_argv = (char**)realloc(new_argv, size * sizeof(char*));
-                CHECK_PTR(new_argv);
-            }
-            new_argv[last++] = argv[i];
-        }
-    }
-    new_argv[last] = NULL;
-    find_executable(new_argv, input, output, append);
+inline char isdelim(char c, char *str) {
+    do {
+        if (*str == c)
+            return TRUE;
+    } while (*str++ != '\0');
+    return FALSE;
 }
 
-void split_into_commands(char **args, char* input) {
-    int i, j;
-    int size = strlen(input);
-    char s_quote = FALSE;
-    char d_quote = FALSE;
-    int start = 0;
-    int last = 0;
+void split_into_commands(char **argv, char* line) {
+    char mask = NONE;
+    char *ptr = line;
+    char *input = NULL;
+    char *output = NULL;
+    char** args = NULL;
+    char* option = NULL;
+    size_t last = 0;
+    size_t index = 0;
+    size_t capacity = 0;
+    size_t size = 0;
+    char append = FALSE;
 
-    size_t capacity = ARGS_COUNT;
-    char** argv = (char**)malloc(capacity * sizeof(char*));
-    CHECK_PTR(argv);
-
-    for (i = 0; i <= size; ++i) {
-        if (s_quote || d_quote) {
-            if (input[i] == '\'' && s_quote) {
-                s_quote = FALSE;
-            } else if (input[i] == '\"' && d_quote) {
-                d_quote = FALSE;
-            } else if (i == size) {
-                fprintf(stderr, "%s: error near quote", args[0]);
-                exit(1);
-            }
-        } else {
-            if (input[i] == '#') {
-                break;            
-            } else if (input[i] == '\\') {
-                ++i;
-                if (input[i] == '\0') {
-                    fprintf(stderr, "%s: error near backslash\n", args[0]);
-                    exit(1);
-                }
-            } else if (input[i] == '\'') {
-                s_quote = TRUE;
-            } else if (input[i] == '\"') {
-                d_quote = TRUE;
-            } else if (isspace(input[i]) || input[i] == ';' || i == size) {
-                if (i != start) {
+    while (1) {
+        if (mask == NONE) {
+            if (*ptr == '\\') {
+                mask = BACKSLASH;
+            } else if (*ptr == '\'') {
+                mask = SINGLE_QUOTE;
+            } else if (*ptr == '\"') {
+                mask = DOUBLE_QUOTE;
+            } else if (isdelim(*ptr, "<>|;# \f\r\t\v\0")) {
+                if (index) {
                     if (last + 1 >= capacity) {
                         capacity += ARGS_COUNT;
-                        argv = (char**)realloc(argv, capacity * sizeof(char*));
-                        CHECK_PTR(argv);
+                        args = (char**)realloc(args, capacity * sizeof(char*));
+                        CHECK_PTR(args);
                     }
-                    argv[last] = (char*)malloc((i - start + 1) * sizeof(char));
-                    CHECK_PTR(argv[last]);
-                    for (j = start; j < i; ++j)
-                        argv[last][j - start] = input[j];
-                    argv[last][i - start] = '\0';
-                    ++last;
+                    option[index] = '\0';
+                    args[last++] = option;
+                    index = 0;
+                    size = 0;
+                    option = NULL;
                 }
-                start = i + 1;
-
-                if (last > 0 && (input[i] == ';' || i == size)) {
-                    argv[last] = NULL;
-                    streams_handler(argv);
-
-                    for (j = 0; argv[j] != NULL; ++j)
-                        free(argv[j]);
-
-                    last = 0;
-                    capacity = ARGS_COUNT;
-                    argv = (char**)realloc(argv, capacity * sizeof(char*));
-                    CHECK_PTR(argv);
+                if (*ptr == '<') {
+                    mask = INPUT;
+                } else if (*ptr == '>') {
+                    mask = OUTPUT;
                 }
+                if (isdelim(*ptr, "|;#\0")) {
+                    if (last > 0) {
+                        args[last] = NULL;
+                        find_executable(args, input, output, append);
+                        for (index = 0; index < last; ++index)
+                            free(args[index]);
+                        free(args);
+                        last = 0;
+                        capacity = 0;
+                        args = NULL;
+                    }
+                    free(input);
+                    free(output);
+                    input = output = NULL;
+                    if (isdelim(*ptr, "#\0")) {
+                        break;
+                    }
+                }
+            } else {
+                if (index + 1 >= size) {
+                    size += ARG_SIZE;
+                    option = (char*)realloc(option, size * sizeof(char));
+                    CHECK_PTR(option);
+                }
+                option[index++] = *ptr;
             }
+        } else if (mask == BACKSLASH) {
+            if (*ptr == '\0') {
+                fprintf(stderr, "%s: error near backslash\n", argv[0]);
+                break;
+            } else {
+                if (index + 1 >= size) {
+                    size += ARG_SIZE;
+                    option = (char*)realloc(option, size * sizeof(char));
+                    CHECK_PTR(option);
+                }
+                option[index++] = *ptr;
+            }
+            mask = NONE;
+        } else if (mask == SINGLE_QUOTE) {
+            if (*ptr == '\0') {
+                fprintf(stderr, "%s: error near single quote\n", argv[0]);
+                break;
+            } else if (*ptr == '\'') {
+                mask = NONE;
+            } else {
+                if (index + 1 >= size) {
+                    size += ARG_SIZE;
+                    option = (char*)realloc(option, size * sizeof(char));
+                    CHECK_PTR(option);
+                }
+                option[index++] = *ptr;
+            }
+        } else if (mask == DOUBLE_QUOTE) {
+            if (*ptr == '\0') {
+                fprintf(stderr, "%s: error near double quote\n", argv[0]);
+                break;
+            } else if (*ptr == '\"') {
+                mask = NONE;
+            //} else if (*ptr == '$') {
+            } else {
+                if (index + 1 >= size) {
+                    size += ARG_SIZE;
+                    option = (char*)realloc(option, size * sizeof(char));
+                    CHECK_PTR(option);
+                }
+                option[index++] = *ptr;
+            }
+        } else if (mask == INPUT) {
+            while (isdelim(*ptr, " \f\r\t\v"))
+                ++ptr;
+            while (!isdelim(*ptr, "<>|;# \f\r\t\v\0")) {
+                if (index + 1 >= size) {
+                    size += ARG_SIZE;
+                    input = (char*)realloc(input, size * sizeof(char));
+                    CHECK_PTR(input);
+                }
+                input[index++] = *ptr;
+                ++ptr;
+            }
+            if (!index) {
+                fprintf(stderr, "input stream '<': syntax error\n");
+                break;
+            }
+            input[index] = '\0';
+            index = 0;
+            size = 0;
+            --ptr;
+            mask = NONE;
+        } else if (mask == OUTPUT) {
+            if (*ptr == '>') {
+                append = TRUE;
+                ++ptr;
+            } else {
+                append = FALSE;
+            }
+            while (isdelim(*ptr, " \f\r\t\v"))
+                ++ptr;
+            while (!isdelim(*ptr, "<>|;# \f\r\t\v\0")) {
+                if (index + 1 >= size) {
+                    size += ARG_SIZE;
+                    output = (char*)realloc(output, size * sizeof(char));
+                    CHECK_PTR(output);
+                }
+                output[index++] = *ptr;
+                ++ptr;
+            }
+            if (!index) {
+                fprintf(stderr, "output stream '%s': syntax error\n", (append ? ">>" : ">"));
+                break;
+            }
+            output[index] = '\0';
+            index = 0;
+            size = 0;
+            --ptr;
+            mask = NONE;
         }
+        ++ptr;
     }
 }
 

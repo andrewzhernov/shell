@@ -1,26 +1,41 @@
 #include "readline.h"
 
-void readline(char **line, FILE *pFile) {
+int readline(FILE* pFile, char** line, char delim) {
     size_t size = 0;
-    size_t capacity = MEMORY_PAGE_SIZE;
+    size_t capacity = 0;
     int symbol;
 
-    CHECK_RES(line == NULL, "readline: invalid pointer\n");
-    CHECK_RES(pFile == NULL, "readline: can't open a file\n");
+    if (line == NULL) {
+        return err_num = INVALID_POINTER;
+    }
+    if (pFile == NULL) {
+        return err_num = ERROR_OPENING_FILE;
+    }
 
-    *line = (char*)malloc(capacity * sizeof(char));
-    CHECK_RES(*line == NULL, "readline: failed to allocate memory\n");
-
-    while ((symbol = fgetc(pFile)) != '\n' && symbol != EOF) {
+    *line = NULL;
+    while ((symbol = fgetc(pFile)) != delim && symbol != EOF) {
         if (size + 1 >= capacity) {
+            char* ptr;
             capacity += MEMORY_PAGE_SIZE;
-            *line = (char*)realloc(*line, capacity * sizeof(char));
-            CHECK_RES(*line == NULL, "readline: failed to allocate memory\n");
+            if ((ptr = (char*)realloc(*line, capacity * sizeof(char))) == NULL) {
+                return err_num = NOT_ENOUGH_MEMORY;
+            }
+            *line = ptr;
         }
         (*line)[size++] = symbol;
     }
+    if (ferror(pFile)) {
+        free(*line);
+        *line = NULL;
+        return err_num = FILE_ERROR;
+    }
+    if (!size) {
+        *line = malloc(sizeof(char));
+    }
     (*line)[size] = '\0';
-
-    CHECK_RES(symbol == EOF, "\n");
-    CHECK_RES(ferror(pFile), "readline: file error\n");
+    
+    if (symbol == EOF) {
+        return err_num = END_OF_FILE;
+    }
+    return err_num = SUCCESS_RETVAL;
 }
